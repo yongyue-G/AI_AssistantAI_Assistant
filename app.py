@@ -12,8 +12,6 @@ from urllib.parse import urlparse, urlencode
 import websocket 
 
 # =======================================================
-# 🔐 专属秘钥已自动装填
-# =======================================================
 APPID = "a232feea"
 API_SECRET = "NWZiYTUwNjY4ZGVjYTIyYjI3ZDFlOTg3"
 API_KEY = "4b9e899159084f15bfca10dc0ad489b4"
@@ -38,7 +36,6 @@ class SparkAPI:
         v = {"authorization": base64.b64encode(authorization_origin.encode('utf-8')).decode(encoding='utf-8'),"date": date,"host": self.host}
         return self.spark_url + '?' + urlencode(v)
 
-# 核心升级 1：真·流式输出生成器 (解决长时间白屏等待)
 def stream_spark_response(prompt, max_tokens=2048):
     spark_url = "wss://spark-api.xf-yun.com/v3.5/chat"
     handler = SparkAPI(APPID, API_KEY, API_SECRET, spark_url)
@@ -58,134 +55,150 @@ def stream_spark_response(prompt, max_tokens=2048):
                 yield f"\n⚠️ 接口报错: {content['header']['message']}"
                 break
             choices = content['payload']['choices']
-            yield choices['text'][0]['content'] # 逐字推送到网页
-            if choices['status'] == 2: 
-                break
+            yield choices['text'][0]['content']
+            if choices['status'] == 2: break
         ws.close()
     except Exception as e:
         yield f"\n网络连接异常: {str(e)}"
 
-# 核心升级 2：非流式请求 (用于后台默默判断逻辑)
 def get_silent_response(prompt):
     full_text = ""
     for chunk in stream_spark_response(prompt, 500):
         full_text += chunk
     return full_text
 
-# --- 初始化应用状态 ---
+# --- 状态初始化 ---
 st.set_page_config(page_title="AI学习空间", layout="wide", page_icon="💡")
 
-if "chat_history" not in st.session_state:
-    # 设定面试官的性格和任务
-    st.session_state.chat_history = [{"role": "assistant", "content": "你好！我是你的AI学习导师。为了给你量身定制学习方案，我们先聊聊吧。请问你目前学的是什么专业？"}]
 if "phase" not in st.session_state:
-    st.session_state.phase = "chatting" # 状态机：chatting (聊天中) -> profiling (生成中)
+    st.session_state.phase = "chatting" 
 if "pdf_text" not in st.session_state:
     st.session_state.pdf_text = ""
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = [{"role": "assistant", "content": "同学你好！👋 既然要生成专属学习计划，请**先在左侧上传你要学的 PDF 教材**。我读完后，我们再开始针对性聊聊！"}]
+# 新增：记录课后辅导记录
+if "tutor_history" not in st.session_state:
+    st.session_state.tutor_history = [{"role": "assistant", "content": "🎯 资料看完了吗？如果有不懂的概念，或者想提交上面练习题的答案让我批改，随时发给我！"}]
 
-# --- 侧边栏：美化与状态追踪 ---
+# --- 侧边栏 ---
 with st.sidebar:
     st.image("https://api.dicebear.com/7.x/bottts/svg?seed=Felix&backgroundColor=e2e8f0", width=100)
     st.title("👨‍🏫 智能导师中控台")
     st.markdown("---")
     
-    st.subheader("📁 第一步：注入灵魂 (教材)")
-    uploaded_file = st.file_uploader("请上传本次课程的 PDF", type="pdf")
+    uploaded_file = st.file_uploader("📂 注入当前课程 PDF", type="pdf")
+    
     if uploaded_file and not st.session_state.pdf_text:
-        with st.spinner("正在解析知识库..."):
+        with st.spinner("导师正在速读教材..."):
             reader = PyPDF2.PdfReader(uploaded_file)
-            # 提取前3页内容作为知识库基础
             for i in range(min(3, len(reader.pages))):
                 st.session_state.pdf_text += reader.pages[i].extract_text()
-            st.success("✅ 教材解析完毕！请在右侧与导师对话。")
+            
+            welcome_prompt = f"学生刚上传教材，内容摘要：{st.session_state.pdf_text[:300]}。作为导师主动打招呼，指出资料核心并顺势提问他的基础。限80字。"
+            st.session_state.chat_history = [{"role": "assistant", "content": get_silent_response(welcome_prompt)}]
+            st.rerun()
             
     st.markdown("---")
     st.subheader("🎯 任务进度追踪")
-    if st.session_state.phase == "chatting":
-        st.info("🔄 当前阶段：智能多轮对话画像中...")
+    if not st.session_state.pdf_text:
+        st.warning("⏳ 等待上传教材...")
+    elif st.session_state.phase == "chatting":
+        st.info("🔄 结合教材深度访谈中...")
     else:
-        st.success("✅ 画像完毕，多智能体已接管系统！")
+        st.success("✅ 画像完毕，已开启辅导模式！")
 
-# --- 主界面逻辑 ---
+# --- 主界面 ---
 st.title("🎓 基于大模型的多智能体个性化学习空间")
 
-# 阶段一：动态多轮交互 (面试官)
 if st.session_state.phase == "chatting":
     st.markdown("### 💬 导师深度访谈区")
-    st.caption("不要拘束，像聊天一样告诉我你的情况。当导师认为足够了解你时，会自动为你开启专属学习通道。")
     
-    # 渲染历史对话
     chat_box = st.container(height=400)
     with chat_box:
         for msg in st.session_state.chat_history:
             st.chat_message(msg["role"]).write(msg["content"])
             
-    # 用户输入框
-    user_input = st.chat_input("输入你的回答 (例：我是计科大二，基础很差，总挂科...)")
+    user_input = st.chat_input("输入你的回答...")
     if user_input:
         if not uploaded_file:
-            st.toast("⚠️ 请先在左侧上传PDF教材哦！", icon="🚨")
+            st.toast("⚠️ 请先上传PDF教材，导师才能提问哦！", icon="🚨")
         else:
-            # 1. 记录用户话语
             st.session_state.chat_history.append({"role": "user", "content": user_input})
             chat_box.chat_message("user").write(user_input)
             
-            # 2. 组装后台判断指令：让AI决定是继续问，还是结束
             history_str = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.chat_history])
             judge_prompt = f"""
-            你是一名专业的学习诊断导师。以下是你和学生的对话历史：
-            {history_str}
-            你的任务是判断是否已经充分了解该学生的：1.专业基础 2.学习痛点/易错点 3.学习目标 4.认知偏好。
-            如果信息不足，请提出【一个】针对性的问题继续追问。
-            如果以上4点都已明确（通常需要2-3个回合），请直接回复："[评估完成]"，不要说任何多余的话。
+            探讨教材核心内容：{st.session_state.pdf_text[:400]}...
+            对话历史：{history_str}
+            任务：
+            1. 评估信息是否足够。如果不足，紧扣教材内容追问。
+            2. 若交流2个来回以上且信息足够，直接回复："[评估完成]"。
             """
-            
             with st.spinner("导师思考中..."):
                 ai_reply = get_silent_response(judge_prompt)
             
-            # 3. 拦截并处理状态切换
             if "[评估完成]" in ai_reply:
                 st.session_state.phase = "profiling"
-                st.rerun() # 刷新页面进入下一阶段
+                st.rerun()
             else:
                 st.session_state.chat_history.append({"role": "assistant", "content": ai_reply})
                 chat_box.chat_message("assistant").write(ai_reply)
 
-# 阶段二：多智能体并发生成 (0延迟流式呈现)
 elif st.session_state.phase == "profiling":
-    st.success("🎉 导师访谈结束！系统已充分掌握您的学习特征。多智能体协作流水线正在为您生成资源...")
+    st.success("🎉 导师访谈结束！为您生成的专属学习资料如下：")
     
-    # 提取聊天记录作为学生的“灵魂数据”
     student_data = "\n".join([m['content'] for m in st.session_state.chat_history if m['role'] == 'user'])
-    book_data = st.session_state.pdf_text[:1000] # 截取1000字教材
+    book_data = st.session_state.pdf_text[:1000]
     
-    # 重新设计的 UI：手风琴式折叠面板 (避免页面拉得无限长)
-    with st.expander("🕵️‍♂️ 智能体 1：动态学习画像 (6维度)", expanded=True):
-        st.caption("打字机极速输出中...")
-        p1 = f"根据学生自述：{student_data}。请构建包含：知识基础、认知风格、易错点偏好、学习目标、驱动力、环境偏好 6个维度的学习画像。要求：Markdown列表结构，专业严谨。"
-        # 直接使用流式输出写入界面，速度飞快！
-        st.write_stream(stream_spark_response(p1, max_tokens=500))
+    # 缩小生成区的篇幅，把重点让给底部的交互区
+    with st.expander("🕵️‍♂️ 智能体 1 & 2：动态画像与路径规划", expanded=False):
+        st.write_stream(stream_spark_response(f"结合：{student_data}和教材：{book_data[:200]}。给出极简的5维度画像和3阶段路径。字数控制在200内。", 400))
         
-    with st.expander("🧭 智能体 2：个性化学习路径规划", expanded=True):
-        p2 = f"结合学生特点：{student_data}，以及教材内容摘要：{book_data[:300]}。为他量身定制一个分为【基础铺垫-核心攻坚-拓展实战】三个阶段的学习路径。列出具体要看哪一章、做什么练习。"
-        st.write_stream(stream_spark_response(p2, max_tokens=600))
-        
-    st.markdown("### 📚 基于教材的专属多模态资源生成区")
+    st.markdown("### 📚 您的多模态学习资源包")
     tab1, tab2, tab3 = st.tabs(["📝 核心题库与解析", "💻 实操项目案例", "🎬 微课动画分镜"])
-    
     with tab1:
-        st.info("💡 考评出题员正在根据您的薄弱点自动生成题目...")
-        p3 = f"教材内容：{book_data[:500]}。学生基础较弱。请生成3道难度递进的练习题（含单选、多选、实操应用），必须附带详细解析。"
-        st.write_stream(stream_spark_response(p3, max_tokens=800))
-        
+        st.write_stream(stream_spark_response(f"教材内容：{book_data[:400]}。生成2道练习题（不直接给答案，提示学生在页面底部作答）。", 500))
     with tab2:
-        st.info("🛠️ 助教智能体为您匹配的实践项目...")
-        p4 = f"教材内容：{book_data[:500]}。针对学生的专业需求，设计一个与该教材相关的实战小项目。说明项目背景、任务步骤，并给出一小段核心代码或流程说明。"
-        st.write_stream(stream_spark_response(p4, max_tokens=800))
-        
+        st.write_stream(stream_spark_response(f"教材内容：{book_data[:400]}。设计一个实战小案例。", 500))
     with tab3:
-        st.info("🎥 视觉多模态智能体为您转化了晦涩难懂的概念...")
-        p5 = f"为了帮该学生直观理解教材内容：{book_data[:300]}。请策划一个1分钟的科普短视频脚本。包含：【画面分镜】和【旁白词】。帮助他视觉化学习。"
-        st.write_stream(stream_spark_response(p5, max_tokens=600))
+        st.write_stream(stream_spark_response(f"基于教材：{book_data[:300]}。写一段1分钟视频分镜脚本。", 400))
         
-    st.balloons()
+    st.divider()
+    
+    # ========================================================
+    # 🚀 核心升级区：AI伴学与学情评估智能体 (拿满加分项4和5)
+    # ========================================================
+    st.markdown("### 🧑‍🏫 24小时专属 AI 伴学答疑区")
+    st.caption("把上面生成的习题答案发在这里，或者抛出你不懂的概念，导师实时为你打分和解答！")
+    
+    # 渲染辅导记录
+    tutor_box = st.container(height=350)
+    with tutor_box:
+        for msg in st.session_state.tutor_history:
+            st.chat_message(msg["role"]).write(msg["content"])
+            
+    # 接收学生提问/答题
+    tutor_input = st.chat_input("在此输入习题答案，或向导师提问...")
+    if tutor_input:
+        # 显示学生的输入
+        st.session_state.tutor_history.append({"role": "user", "content": tutor_input})
+        tutor_box.chat_message("user").write(tutor_input)
+        
+        # 封装批改指令
+        tutor_prompt = f"""
+        你是一名严格但鼓励人的大学老师。
+        这门课的教材内容是：{book_data[:800]}
+        学生刚发送了："{tutor_input}"
+        
+        你的任务：
+        1. 意图识别：判断学生是在【提交答案】还是在【提问】。
+        2. 如果是【提问】：结合教材原文耐心解答。
+        3. 如果是【提交答案】：请批改他的答案对错，给出一个评分（如 80/100分），并指出哪里理解有偏差。
+        4. 结尾加上一句对该学生“当前学习效果”的动态简评（这符合‘动态学习评估’的要求）。
+        """
+        
+        # 流式输出导师的解答
+        with tutor_box.chat_message("assistant"):
+            reply = st.write_stream(stream_spark_response(tutor_prompt, max_tokens=800))
+        
+        st.session_state.tutor_history.append({"role": "assistant", "content": reply})
