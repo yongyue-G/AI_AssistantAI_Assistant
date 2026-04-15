@@ -9,13 +9,20 @@ from urllib.parse import urlparse, urlencode
 import websocket 
 
 # =======================================================
-# 🔐 你的专属星火秘钥集中管理
+# 🔐 1. 核心秘钥配置区 (请替换为你自己的)
 # =======================================================
 APPID = "a232feea"
 API_SECRET = "NWZiYTUwNjY4ZGVjYTIyYjI3ZDFlOTg3"
 API_KEY = "4b9e899159084f15bfca10dc0ad489b4"
-# =======================================================
 
+
+SPARK_URL = "wss://spark-api.xf-yun.com/v3.5/chat" 
+DOMAIN = "max70-32k" # 👈 修改这里，从报错列表选中的精确值
+MAX_TOKEN_LIMIT = 32000
+
+# =======================================================
+# 🛠️ 3. 鉴权签名引擎
+# =======================================================
 class SparkAPI:
     def __init__(self, appid, api_key, api_secret, spark_url):
         self.appid = appid
@@ -32,38 +39,67 @@ class SparkAPI:
         signature_sha = hmac.new(self.api_secret.encode('utf-8'), signature_origin.encode('utf-8'), digestmod=hashlib.sha256).digest()
         signature_sha_base64 = base64.b64encode(signature_sha).decode(encoding='utf-8')
         authorization_origin = f'api_key="{self.api_key}", algorithm="hmac-sha256", headers="host date request-line", signature="{signature_sha_base64}"'
-        v = {"authorization": base64.b64encode(authorization_origin.encode('utf-8')).decode(encoding='utf-8'),"date": date,"host": self.host}
+        v = {"authorization": base64.b64encode(authorization_origin.encode('utf-8')).decode(encoding='utf-8'), "date": date, "host": self.host}
         return self.spark_url + '?' + urlencode(v)
 
-def stream_spark_response(prompt, max_tokens=2048):
-    """供网页前端调用的流式输出发电机"""
-    spark_url = "wss://spark-api.xf-yun.com/v3.5/chat"
-    handler = SparkAPI(APPID, API_KEY, API_SECRET, spark_url)
+# =======================================================
+# 🚀 4. 高级调用接口
+# =======================================================
+def stream_spark_response(prompt, max_tokens=512):
+    """
+    供前端使用的流式生成器。
+    Ultra版支持超长生成，默认设为4096，最高可传32000。
+    """
+    handler = SparkAPI(APPID, API_KEY, API_SECRET, SPARK_URL)
     ws_url = handler.create_url()
     try:
-        ws = websocket.create_connection(ws_url, timeout=10)
+        # 增加超时时间以应对长文本处理
+        ws = websocket.create_connection(ws_url, timeout=30)
+        
+        # 动态计算安全上限
+        safe_max_tokens = min(max_tokens, MAX_TOKEN_LIMIT)
+        
         data = {
             "header": {"app_id": APPID},
-            "parameter": {"chat": {"domain": "generalv3.5", "temperature": 0.6, "max_tokens": max_tokens}},
+            "parameter": {
+                "chat": {
+                    "domain": DOMAIN, 
+                    "temperature": 0.5, 
+                    "max_tokens": safe_max_tokens,
+                    "auditing": "default" # 显式开启合规审计
+                }
+            },
             "payload": {"message": {"text": [{"role": "user", "content": prompt}]}}
         }
+        
         ws.send(json.dumps(data))
         while True:
             res = ws.recv()
             content = json.loads(res)
-            if content['header']['code'] != 0: 
-                yield f"\n⚠️ 接口报错: {content['header']['message']}"
+            
+            # 详尽的错误拦截
+            code = content['header']['code']
+            if code != 0: 
+                err_msg = content['header']['message']
+                yield f"\n⚠️ [Spark Ultra 错误] 状态码: {code}, 详情: {err_msg}"
+                if code == 11200:
+                    yield "\n*提示：请检查控制台是否已开通 Ultra-32K 权限并将 DOMAIN 修改正确。*"
                 break
+                
             choices = content['payload']['choices']
             yield choices['text'][0]['content']
-            if choices['status'] == 2: break
+            
+            if choices['status'] == 2:
+                break
         ws.close()
     except Exception as e:
-        yield f"\n网络连接异常: {str(e)}"
+        yield f"\n⚠️ [WebSocket 连接中断]: {str(e)}"
 
-def get_silent_response(prompt, max_tokens=2048):
-    """供后台默默思考用的发电机 (非流式)，默认加大 token 限制防截断"""
+def get_silent_response(prompt, max_tokens=512):
+    """非流式同步接口，专为长讲义生成设计"""
     full_text = ""
     for chunk in stream_spark_response(prompt, max_tokens):
+        if "⚠️" in chunk:
+            return f"Error: {chunk}"
         full_text += chunk
     return full_text
